@@ -8,7 +8,8 @@ def get_layer_context(model, tokenizer, input_ids, layer_idx, print_context=Fals
     decoder_layer = model.model.layers[layer_idx]
     idx = decoder_layer.self_attn.indecies[0, 0, :]
     values, _ = torch.sort(idx)
-    values = values.to('cuda:0')
+    # values = values.to('cuda:0')
+    values = values.to('cuda:4')
     new_input_ids = input_ids.gather(0, values)
     if print_context:
         print(tokenizer.decode(new_input_ids))

@@ -72,7 +72,8 @@ LlamaForCausalLM.forward = my_forward
 MistralForCausalLM.forward = my_forward
 Phi3ForCausalLM.forward = my_forward
 
-def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map='auto', flash_attention_2=False):
+# def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map='auto', flash_attention_2=False):
+def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map=None, flash_attention_2=False, device='cuda:4'):
     if flash_attention_2:
         attn_implementation = 'flash_attention_2'
     else:
@@ -100,6 +101,9 @@ def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map='a
         PHI3_ATTENTION_CLASSES[attn_implementation] = Phi3H2OAttention
     else:
         assert modified is None
+    
+    if device_map is None:
+        device_map = {'': device}
 
     model = AutoModelForCausalLM.from_pretrained(model_id, 
                                             attn_implementation=attn_implementation, 

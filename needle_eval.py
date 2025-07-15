@@ -1,3 +1,6 @@
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 import argparse
 import torch 
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -7,7 +10,8 @@ from my_utils.load_model import load_model
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, required=True, 
-                    choices=['meta-llama/Meta-Llama-3.1-8B-Instruct', 
+                    # choices=['meta-llama/Meta-Llama-3.1-8B-Instruct', 
+                    choices=['NousResearch/Meta-Llama-3.1-8B-Instruct', 
                              'mistralai/Mistral-Nemo-Instruct-2407',
                              'microsoft/Phi-3.5-mini-instruct']) # huggingface model id
 parser.add_argument('--modified', type=str, default=None, choices=['gemfilter', 'snapkv', 'h2o']) # None for standard attention
@@ -25,7 +29,8 @@ if args.modified == 'h2o':
 else:
     flash_attention_2 = True
 
-if model_id == 'meta-llama/Meta-Llama-3.1-8B-Instruct':
+# if model_id == 'meta-llama/Meta-Llama-3.1-8B-Instruct':
+if model_id == 'NousResearch/Meta-Llama-3.1-8B-Instruct':
     select_layer_idx = 13  # 13, 14 out of 32
 elif model_id == 'mistralai/Mistral-Nemo-Instruct-2407':
     select_layer_idx = 19  # 19 out of 40
