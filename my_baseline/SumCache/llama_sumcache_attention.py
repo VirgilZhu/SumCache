@@ -130,6 +130,7 @@ class SumKVCache_LayerWise:
         num_sum_tokens=2,
         k_seq_dim=2,
         v_seq_dim=2,
+        head_dim=128,
     ):
         self.sum_cache_size = sum_cache_size
         self.recent_size = recent_size
@@ -143,6 +144,8 @@ class SumKVCache_LayerWise:
         self.importance_scores = None
         self.last_compressed_idx = 0
 
+        self.summary_q = nn.Parameter(torch.randn(num_sum_tokens, head_dim))
+
     def __call__(self, key_states, value_states, layer_idx, past_key_values, attn_weights):
         """
         直接修改past_key_values，避免复制缓存
@@ -155,17 +158,22 @@ class SumKVCache_LayerWise:
             
         # 更新重要性分数：注意力权重列求和
         self._update_importance_scores(attn_weights)
-        
-        # 检查是否需要压缩
+
+        # 正确计算当前总长度
         current_kv_len = past_key_values.key_cache[layer_idx].shape[2] if past_key_values else 0
-        total_len = current_kv_len + seq_len
-        
-        if total_len > self.recent_size and (total_len - self.recent_size - self.last_compressed_idx) >= self.chunk_size:
+        total_len = current_kv_len + seq_len if seq_len == 1 else current_kv_len
+
+        # 如果需要压缩的长度大于0，则循环压缩所有完整chunk
+        while (total_len > self.recent_size and
+               (total_len - self.recent_size - self.last_compressed_idx) >= self.chunk_size):
             past_key_values = self.compress_chunk(
                 key_states, value_states, layer_idx, past_key_values, total_len
             )
-            self.last_compressed_idx = total_len - self.recent_size
-        
+
+            # 更新缓存长度（压缩后长度会变化）
+            current_kv_len = past_key_values.key_cache[layer_idx].shape[2]
+            total_len = current_kv_len + seq_len if seq_len == 1 else current_kv_len
+
         return past_key_values
     
     def _update_importance_scores(self, attn_weights):
@@ -186,51 +194,49 @@ class SumKVCache_LayerWise:
         start_idx = self.last_compressed_idx
         end_idx = min(start_idx + self.chunk_size, total_len - self.recent_size)
         chunk_size = end_idx - start_idx
-        
-        # 获取要压缩的chunk
-        if past_key_values is None:
-            # 如果没有历史缓存，整个序列都是新的
-            key_chunk = key_states[:, :, :chunk_size]
-            value_chunk = value_states[:, :, :chunk_size]
-            scores_chunk = self.importance_scores[:, :chunk_size]
-        else:
-            # 从缓存中获取chunk
-            key_chunk = past_key_values.key_cache[layer_idx][:, :, start_idx:end_idx]
-            value_chunk = past_key_values.value_cache[layer_idx][:, :, start_idx:end_idx]
-            scores_chunk = self.importance_scores[:, start_idx:end_idx]
+
+        # 从 Cache 中获取chunk
+        key_chunk = past_key_values.key_cache[layer_idx][:, :, start_idx:end_idx]
+        value_chunk = past_key_values.value_cache[layer_idx][:, :, start_idx:end_idx]
+        scores_chunk = self.importance_scores[:, start_idx:end_idx]
         
         bsz, num_heads, chunk_len, head_dim = key_chunk.shape
         
-        # 1. 选择重要token (topk)
+        # top-k important tokens
         _, topk_indices = torch.topk(scores_chunk, k=min(self.topk_keep, chunk_len), dim=-1)
         topk_indices = topk_indices.sort(dim=-1).values
-        
-        # 2. 创建summary tokens
-        summary_k = torch.zeros(bsz, num_heads, self.num_sum_tokens, head_dim, 
-                              device=key_chunk.device, dtype=key_chunk.dtype)
-        summary_v = torch.zeros_like(summary_k)
-        
-        # 3. 计算summary tokens的KV (通过注意力聚合)
-        # 注意: 这里简化处理，实际应用中可能需要更精细的聚合方法
-        with torch.no_grad():
-            # 计算聚合权重
-            weights = F.softmax(scores_chunk, dim=-1).unsqueeze(-1).unsqueeze(1)
-            weights = weights.expand(-1, num_heads, -1, head_dim)
-            
-            # 聚合整个chunk的KV
-            summary_k = (key_chunk * weights).sum(dim=2, keepdim=True).expand(-1, -1, self.num_sum_tokens, -1)
-            summary_v = (value_chunk * weights).sum(dim=2, keepdim=True).expand(-1, -1, self.num_sum_tokens, -1)
-        
-        # 4. 获取重要token的KV
         topk_indices_exp = topk_indices.view(bsz, 1, -1, 1).expand(-1, num_heads, -1, head_dim)
+
         key_topk = torch.gather(key_chunk, dim=2, index=topk_indices_exp)
         value_topk = torch.gather(value_chunk, dim=2, index=topk_indices_exp)
         
-        # 5. 组合重要token和summary tokens
+        # 可学习的summary query向量
+        summary_q = self.summary_q.to(device=key_chunk.device)
+        summary_q = summary_q.unsqueeze(0).unsqueeze(0)  # [1,1,num_sum,head_dim]
+        summary_q = summary_q.expand(bsz, num_heads, -1, -1)
+
+        # 计算summary tokens的注意力分数
+        attn_scores = torch.matmul(             # [bsz, num_heads, num_sum_tokens, chunk_len]
+            summary_q,
+            key_chunk.transpose(-1, -2)
+        ) / math.sqrt(head_dim)
+
+        summary_important_scores = attn_scores.sum(dim=-1).sum(dim=1)
+        summary_scores = summary_important_scores
+
+        # 应用softmax获取注意力权重
+        attn_weights = F.softmax(attn_scores, dim=-1)
+
+        # 使用注意力权重聚合key
+        summary_k = torch.matmul(attn_weights, key_chunk)
+        # 使用注意力权重聚合value
+        summary_v = torch.matmul(attn_weights, value_chunk)
+        
+        # 组合重要token和summary tokens
         compressed_key = torch.cat([key_topk, summary_k], dim=2)
         compressed_value = torch.cat([value_topk, summary_v], dim=2)
         
-        # 6. 更新缓存
+        # 更新缓存
         if past_key_values is None:
             # 创建新缓存
             past_key_values = DynamicCache()
@@ -259,12 +265,18 @@ class SumKVCache_LayerWise:
             past_key_values.key_cache[layer_idx] = new_key_cache
             past_key_values.value_cache[layer_idx] = new_value_cache
         
-        # 7. 更新重要性分数（移除压缩部分，添加新token分数）
+        # 更新重要性分数（移除压缩部分，添加新token分数）
+        topk_scores = torch.gather(scores_chunk, 1, topk_indices)
+
+        new_score_segment = torch.cat([topk_scores, summary_scores], dim=1)
+
         self.importance_scores = torch.cat([
             self.importance_scores[:, :start_idx],
-            torch.zeros(bsz, compressed_key.shape[2], device=self.importance_scores.device),
+            new_score_segment,
             self.importance_scores[:, end_idx:]
         ], dim=1)
+
+        self.last_compressed_idx = start_idx + new_score_segment.size(1)
         
         return past_key_values
 
@@ -272,14 +284,16 @@ class SumKVCache_LayerWise:
 class LlamaSumCacheAttention(LlamaAttention):
     def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx)
+        head_dim = config.hidden_size // config.num_attention_heads
         self.kv_cache = SumKVCache_LayerWise(
-            sum_cache_size=512,
-            recent_size=512,
+            sum_cache_size=2048,
+            recent_size=2048,
             chunk_size=26,
             topk_keep=4,
             num_sum_tokens=2,
             k_seq_dim=2,
-            v_seq_dim=2
+            v_seq_dim=2,
+            head_dim=head_dim,
         )
     
     def forward(
@@ -343,12 +357,20 @@ class LlamaSumCacheAttention(LlamaAttention):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
+        if past_key_value is not None:
+            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            key_states, value_states = past_key_value.update(
+                key_states, value_states, self.layer_idx, cache_kwargs)
+
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
         if attention_mask is not None:  # no matter the length, we just slice it
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
             attn_weights = attn_weights + causal_mask
-        
+
+        attn_weights = nn.functional.softmax(
+            attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+
         ### SumCache Add Below ###
         past_key_value = self.kv_cache(
             key_states, value_states, self.layer_idx, 

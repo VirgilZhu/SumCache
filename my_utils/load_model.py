@@ -1,4 +1,8 @@
 # transformers.__version__ == '4.43.3'
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
+
 from typing import List, Optional, Tuple, Union
 from transformers.cache_utils import Cache
 import torch
@@ -72,10 +76,7 @@ LlamaForCausalLM.forward = my_forward
 MistralForCausalLM.forward = my_forward
 Phi3ForCausalLM.forward = my_forward
 
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
-
-def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map=None, flash_attention_2=False, device="cuda:3"):
+def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map='auto', flash_attention_2=False):
     if flash_attention_2:
         attn_implementation = 'flash_attention_2'
     else:
@@ -102,7 +103,7 @@ def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map=No
         MISTRAL_ATTENTION_CLASSES[attn_implementation] = MistralH2OAttention
         PHI3_ATTENTION_CLASSES[attn_implementation] = Phi3H2OAttention
     elif modified == 'sumcache':
-        assert flash_attention_2 is True
+        assert flash_attention_2 is False
         from my_baseline.SumCache.llama_sumcache_attention import LlamaSumCacheAttention
         # from my_baseline.SumCache.mistral_sumcache_attention import MistralSumCacheAttention
         # from my_baseline.SumCache.phi3_sumcache_attention import Phi3SumCacheAttention

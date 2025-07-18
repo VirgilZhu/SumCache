@@ -1,5 +1,6 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
 
 import argparse
 import torch 
@@ -24,7 +25,7 @@ modified = args.modified
 topk = args.topk
 ctx_len = args.ctx_len  
 
-if args.modified == 'h2o':
+if args.modified in ['h2o', 'sumcache']:
     flash_attention_2 = False
 else:
     flash_attention_2 = True
@@ -38,9 +39,6 @@ elif model_id == 'microsoft/Phi-3.5-mini-instruct':
     select_layer_idx = 19  # 19 out of 32
 else:
     raise NotImplementedError
-
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
 
 
 torch_dtype=torch.float16

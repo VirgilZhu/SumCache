@@ -36,8 +36,8 @@ def set_topk(model, topk, mode='gemfilter'):
             decoder_layers[i].self_attn.kv_cache.cache_max_size = topk
         elif mode == 'sumcache':
             recent_size = decoder_layers[i].self_attn.kv_cache.recent_size
-            decoder_layers[i].self_attn.kv_cache.sum_cache_size = topk - recent_size
-            decoder_layers[i].self_attn.kv_cache.cache_max_size = topk
+            decoder_layers[i].self_attn.kv_cache.sum_cache_size = topk
+            decoder_layers[i].self_attn.kv_cache.cache_max_size = topk + recent_size
         else:
             raise NotImplementedError
     return
