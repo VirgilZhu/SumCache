@@ -14,7 +14,7 @@ parser.add_argument('--model', type=str, required=True,
                     choices=['NousResearch/Meta-Llama-3.1-8B-Instruct', 
                              'mistralai/Mistral-Nemo-Instruct-2407',
                              'microsoft/Phi-3.5-mini-instruct']) # huggingface model id
-parser.add_argument('--modified', type=str, default=None, choices=['gemfilter', 'snapkv', 'h2o']) # None for standard attention
+parser.add_argument('--modified', type=str, default=None, choices=['gemfilter', 'snapkv', 'h2o', 'sumcache']) # None for standard attention
 parser.add_argument('--topk', type=int, default=1024, help='KV cache size')
 parser.add_argument('--ctx_len', type=int, default=32000, help='haystack context token length')
 args = parser.parse_args()
@@ -38,6 +38,10 @@ elif model_id == 'microsoft/Phi-3.5-mini-instruct':
     select_layer_idx = 19  # 19 out of 32
 else:
     raise NotImplementedError
+
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
+
 
 torch_dtype=torch.float16
 model, tokenizer = load_model(model_id, modified=modified, torch_dtype=torch_dtype, flash_attention_2=flash_attention_2)
