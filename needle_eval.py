@@ -1,6 +1,6 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,6"
 
 import argparse
 import torch 
@@ -18,12 +18,18 @@ parser.add_argument('--model', type=str, required=True,
 parser.add_argument('--modified', type=str, default=None, choices=['gemfilter', 'snapkv', 'h2o', 'sumcache']) # None for standard attention
 parser.add_argument('--topk', type=int, default=1024, help='KV cache size')
 parser.add_argument('--ctx_len', type=int, default=32000, help='haystack context token length')
+parser.add_argument('--num_sum_tokens', type=int, default=2, help='summary tokens size in a compressed chunk')
+parser.add_argument('--topk_important', type=int, default=4, help='important tokens size in a compressed chunk')
+parser.add_argument('--chunk_size', type=int, default=26, help='size of a sequence chunk before compressed')
 args = parser.parse_args()
 
 model_id = args.model
 modified = args.modified 
 topk = args.topk
-ctx_len = args.ctx_len  
+ctx_len = args.ctx_len
+topk_important = args.topk_important
+num_sum_tokens = args.num_sum_tokens
+chunk_size = args.chunk_size
 
 if args.modified in ['h2o', 'sumcache']:
     flash_attention_2 = False
@@ -42,9 +48,9 @@ else:
 
 
 torch_dtype=torch.float16
-model, tokenizer = load_model(model_id, modified=modified, torch_dtype=torch_dtype, flash_attention_2=flash_attention_2)
+model, tokenizer = load_model(model_id, num_sum_tokens, modified=modified, torch_dtype=torch_dtype, flash_attention_2=flash_attention_2)
 if modified:
-    set_topk(model, topk, mode=modified)
+    set_topk(model, topk, num_sum_tokens, topk_important, chunk_size, mode=modified)
 
 # Construct the Needle-in-a-HayStack Prompt
 needle = "\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n"

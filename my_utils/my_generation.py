@@ -23,7 +23,7 @@ def recover_layer(model, layers):
     model.model.layers = layers
     return model
 
-def set_topk(model, topk, mode='gemfilter'):
+def set_topk(model, topk, num_sum_tokens=2, topk_important=4, chunk_size=26, mode='sumcache'):
     decoder_layers = model.model.layers
     for i in range(len(decoder_layers)):
         if mode == 'gemfilter':
@@ -36,8 +36,11 @@ def set_topk(model, topk, mode='gemfilter'):
             decoder_layers[i].self_attn.kv_cache.cache_max_size = topk
         elif mode == 'sumcache':
             recent_size = decoder_layers[i].self_attn.kv_cache.recent_size
-            decoder_layers[i].self_attn.kv_cache.sum_cache_size = topk
-            decoder_layers[i].self_attn.kv_cache.cache_max_size = topk + recent_size
+            decoder_layers[i].self_attn.kv_cache.sum_cache_size = topk - recent_size
+            decoder_layers[i].self_attn.kv_cache.cache_max_size = topk
+            decoder_layers[i].self_attn.kv_cache.num_sum_tokens = num_sum_tokens
+            decoder_layers[i].self_attn.kv_cache.topk_important = topk_important
+            decoder_layers[i].self_attn.kv_cache.chunk_size = chunk_size
         else:
             raise NotImplementedError
     return

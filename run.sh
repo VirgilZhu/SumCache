@@ -1,1 +1,1 @@
-python needle_eval.py --model NousResearch/Meta-Llama-3.1-8B-Instruct --modified sumcache --topk 1024 --ctx_len 6000
+python needle_eval.py --model NousResearch/Meta-Llama-3.1-8B-Instruct --modified sumcache --topk 1024 --ctx_len 8192 --num_sum_tokens 0 --topk_important 1 --chunk_size 26

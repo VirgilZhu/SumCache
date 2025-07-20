@@ -19,20 +19,20 @@ class LlamaSumCacheModel(LlamaModel):
         super().__init__(config)
         ### SumCache Add Below ###
         self.num_sum_tokens = num_sum_tokens
-        self.sum_token_ids = torch.arange(config.vocab_size, config.vocab_size + num_sum_tokens)
-        self.vocab_size = config.vocab_size + num_sum_tokens
+        # self.sum_token_ids = torch.arange(config.vocab_size, config.vocab_size + num_sum_tokens)
+        # self.vocab_size = config.vocab_size + num_sum_tokens
         
         # 扩展嵌入层以包含sum tokens
-        old_embed_tokens = self.embed_tokens
-        self.embed_tokens = nn.Embedding(self.vocab_size, config.hidden_size, self.padding_idx)
+        # old_embed_tokens = self.embed_tokens
+        # self.embed_tokens = nn.Embedding(self.vocab_size, config.hidden_size, self.padding_idx)
         
         # 复制原始权重并初始化sum tokens
-        with torch.no_grad():
-            self.embed_tokens.weight[:config.vocab_size] = old_embed_tokens.weight
+        # with torch.no_grad():
+        #     self.embed_tokens.weight[:config.vocab_size] = old_embed_tokens.weight
             # 使用平均嵌入初始化sum tokens
-            avg_embed = old_embed_tokens.weight.mean(dim=0)
-            for i in range(config.vocab_size, self.vocab_size):
-                self.embed_tokens.weight[i] = avg_embed
+            # avg_embed = old_embed_tokens.weight.mean(dim=0)
+            # for i in range(config.vocab_size, self.vocab_size):
+            #     self.embed_tokens.weight[i] = avg_embed
         ### SumCache Add Above ###
 
     def _update_causal_mask(
@@ -42,7 +42,7 @@ class LlamaSumCacheModel(LlamaModel):
         cache_position: torch.Tensor,
         past_key_values: Cache,
         output_attentions: bool,
-        sum_token_positions: Optional[torch.Tensor] = None
+        # sum_token_positions: Optional[torch.Tensor] = None
     ):
 
         if self.config._attn_implementation == "flash_attention_2":
@@ -105,16 +105,16 @@ class LlamaSumCacheModel(LlamaModel):
             causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
 
         ### SumCache ADD Below ###
-        if sum_token_positions is not None and sum_token_positions.numel() > 0:
-            # 找到最后一个sum_token的位置
-            last_sum_token = sum_token_positions.max().item()
-            
-            # 创建sum_token屏蔽矩阵
-            sum_token_mask = torch.ones((sequence_length, target_length), dtype=dtype, device=device)
-            sum_token_mask[:, :last_sum_token] = min_dtype
-            
-            # 合并到因果掩码
-            causal_mask = torch.min(causal_mask, sum_token_mask)
+        # if sum_token_positions is not None and sum_token_positions.numel() > 0:
+        #     # 找到最后一个sum_token的位置
+        #     last_sum_token = sum_token_positions.max().item()
+        #
+        #     # 创建sum_token屏蔽矩阵
+        #     sum_token_mask = torch.ones((sequence_length, target_length), dtype=dtype, device=device)
+        #     sum_token_mask[:, :last_sum_token] = min_dtype
+        #
+        #     # 合并到因果掩码
+        #     causal_mask = torch.min(causal_mask, sum_token_mask)
         ### SumCache ADD Above ###
 
         return causal_mask
@@ -123,10 +123,10 @@ class LlamaSumCacheModel(LlamaModel):
 class SumKVCache_LayerWise:
     def __init__(
         self,
-        sum_cache_size=256,
-        recent_size=256,
+        sum_cache_size=512,
+        recent_size=512,
         chunk_size=26,
-        topk_keep=4,
+        topk_important=4,
         num_sum_tokens=2,
         k_seq_dim=2,
         v_seq_dim=2,
@@ -136,7 +136,8 @@ class SumKVCache_LayerWise:
         self.recent_size = recent_size
         self.cache_max_size = sum_cache_size + recent_size
         self.chunk_size = chunk_size
-        self.topk_keep = topk_keep
+        self.cache_size = 0
+        self.topk_important = topk_important
         self.num_sum_tokens = num_sum_tokens
         self.k_seq_dim = k_seq_dim
         self.v_seq_dim = v_seq_dim
@@ -144,7 +145,7 @@ class SumKVCache_LayerWise:
         self.importance_scores = None
         self.last_compressed_idx = 0
 
-        self.summary_q = nn.Parameter(torch.randn(num_sum_tokens, head_dim))
+        self.summary_q = nn.Parameter(torch.randn(self.num_sum_tokens, head_dim))
 
     def __call__(self, key_states, value_states, layer_idx, past_key_values, attn_weights):
         """
@@ -159,9 +160,13 @@ class SumKVCache_LayerWise:
         # 更新重要性分数：注意力权重列求和
         self._update_importance_scores(attn_weights)
 
+        # if past_key_values is None:
+        #     return None
+
         # 正确计算当前总长度
         current_kv_len = past_key_values.key_cache[layer_idx].shape[2] if past_key_values else 0
         total_len = current_kv_len + seq_len if seq_len == 1 else current_kv_len
+        self.cache_size = total_len
 
         # 如果需要压缩的长度大于0，则循环压缩所有完整chunk
         while (total_len > self.recent_size and
@@ -173,6 +178,7 @@ class SumKVCache_LayerWise:
             # 更新缓存长度（压缩后长度会变化）
             current_kv_len = past_key_values.key_cache[layer_idx].shape[2]
             total_len = current_kv_len + seq_len if seq_len == 1 else current_kv_len
+            self.cache_size = total_len
 
         return past_key_values
     
@@ -203,38 +209,42 @@ class SumKVCache_LayerWise:
         bsz, num_heads, chunk_len, head_dim = key_chunk.shape
         
         # top-k important tokens
-        _, topk_indices = torch.topk(scores_chunk, k=min(self.topk_keep, chunk_len), dim=-1)
+        _, topk_indices = torch.topk(scores_chunk, k=min(self.topk_important, chunk_len), dim=-1)
         topk_indices = topk_indices.sort(dim=-1).values
         topk_indices_exp = topk_indices.view(bsz, 1, -1, 1).expand(-1, num_heads, -1, head_dim)
 
         key_topk = torch.gather(key_chunk, dim=2, index=topk_indices_exp)
         value_topk = torch.gather(value_chunk, dim=2, index=topk_indices_exp)
-        
-        # 可学习的summary query向量
-        summary_q = self.summary_q.to(device=key_chunk.device)
-        summary_q = summary_q.unsqueeze(0).unsqueeze(0)  # [1,1,num_sum,head_dim]
-        summary_q = summary_q.expand(bsz, num_heads, -1, -1)
 
-        # 计算summary tokens的注意力分数
-        attn_scores = torch.matmul(             # [bsz, num_heads, num_sum_tokens, chunk_len]
-            summary_q,
-            key_chunk.transpose(-1, -2)
-        ) / math.sqrt(head_dim)
+        if self.num_sum_tokens > 0:
+            # 可学习的summary query向量
+            summary_q = self.summary_q.to(device=key_chunk.device)
+            summary_q = summary_q.unsqueeze(0).unsqueeze(0)  # [1,1,num_sum,head_dim]
+            summary_q = summary_q.expand(bsz, num_heads, -1, -1)
 
-        summary_important_scores = attn_scores.sum(dim=-1).sum(dim=1)
-        summary_scores = summary_important_scores
+            # 计算summary tokens的注意力分数
+            attn_scores = torch.matmul(             # [bsz, num_heads, num_sum_tokens, chunk_len]
+                summary_q,
+                key_chunk.transpose(-1, -2)
+            ) / math.sqrt(head_dim)
 
-        # 应用softmax获取注意力权重
-        attn_weights = F.softmax(attn_scores, dim=-1)
+            summary_important_scores = attn_scores.sum(dim=-1).sum(dim=1)
+            summary_scores = summary_important_scores
 
-        # 使用注意力权重聚合key
-        summary_k = torch.matmul(attn_weights, key_chunk)
-        # 使用注意力权重聚合value
-        summary_v = torch.matmul(attn_weights, value_chunk)
-        
-        # 组合重要token和summary tokens
-        compressed_key = torch.cat([key_topk, summary_k], dim=2)
-        compressed_value = torch.cat([value_topk, summary_v], dim=2)
+            # 应用softmax获取注意力权重
+            attn_weights = F.softmax(attn_scores, dim=-1)
+
+            # 使用注意力权重聚合key
+            summary_k = torch.matmul(attn_weights, key_chunk)
+            # 使用注意力权重聚合value
+            summary_v = torch.matmul(attn_weights, value_chunk)
+
+            # 组合重要token和summary tokens
+            compressed_key = torch.cat([key_topk, summary_k], dim=2)
+            compressed_value = torch.cat([value_topk, summary_v], dim=2)
+        else:
+            compressed_key = key_topk
+            compressed_value = value_topk
         
         # 更新缓存
         if past_key_values is None:
@@ -268,7 +278,10 @@ class SumKVCache_LayerWise:
         # 更新重要性分数（移除压缩部分，添加新token分数）
         topk_scores = torch.gather(scores_chunk, 1, topk_indices)
 
-        new_score_segment = torch.cat([topk_scores, summary_scores], dim=1)
+        if self.num_sum_tokens > 0:
+            new_score_segment = torch.cat([topk_scores, summary_scores], dim=1)
+        else:
+            new_score_segment = topk_scores
 
         self.importance_scores = torch.cat([
             self.importance_scores[:, :start_idx],
@@ -277,7 +290,7 @@ class SumKVCache_LayerWise:
         ], dim=1)
 
         self.last_compressed_idx = start_idx + new_score_segment.size(1)
-        
+
         return past_key_values
 
 
@@ -286,10 +299,10 @@ class LlamaSumCacheAttention(LlamaAttention):
         super().__init__(config, layer_idx)
         head_dim = config.hidden_size // config.num_attention_heads
         self.kv_cache = SumKVCache_LayerWise(
-            sum_cache_size=2048,
-            recent_size=2048,
+            sum_cache_size=512,
+            recent_size=512,
             chunk_size=26,
-            topk_keep=4,
+            topk_important=4,
             num_sum_tokens=2,
             k_seq_dim=2,
             v_seq_dim=2,
@@ -306,53 +319,29 @@ class LlamaSumCacheAttention(LlamaAttention):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
-        sum_token_positions: Optional[torch.Tensor] = None,
+        # sum_token_positions: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
-        if self.config.pretraining_tp > 1:
-            key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
-            query_slices = self.q_proj.weight.split(
-                (self.num_heads * self.head_dim) // self.config.pretraining_tp, dim=0
-            )
-            key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
-            value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
-
-            query_states = [F.linear(hidden_states, query_slices[i]) for i in range(self.config.pretraining_tp)]
-            query_states = torch.cat(query_states, dim=-1)
-
-            key_states = [F.linear(hidden_states, key_slices[i]) for i in range(self.config.pretraining_tp)]
-            key_states = torch.cat(key_states, dim=-1)
-
-            value_states = [F.linear(hidden_states, value_slices[i]) for i in range(self.config.pretraining_tp)]
-            value_states = torch.cat(value_states, dim=-1)
-
-        else:
-            query_states = self.q_proj(hidden_states)
-            key_states = self.k_proj(hidden_states)
-            value_states = self.v_proj(hidden_states)
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
 
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        if position_embeddings is None:
-            logger.warning_once(
-                "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
-                "through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed "
-                "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.45 `position_ids` will be "
-                "removed and `position_embeddings` will be mandatory."
-            )
-            cos, sin = self.rotary_emb(value_states, position_ids)
-        else:
-            cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        # [H2O] update below
+        # kv_seq_len = key_states.shape[-2]
+        # if kv_seq_len == 1 and self.layer_idx == 0:
+        #     position_ids += self.position_ids_margin
+        # else:
+        #     self.position_ids_margin = 0
+        # [H2O] update above
 
-        # if past_key_value is not None:
-        #     # sin and cos are specific to RoPE models; cache_position needed for the static cache
-        #     cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        #     key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        cos, sin = self.rotary_emb(value_states, position_ids)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -373,9 +362,10 @@ class LlamaSumCacheAttention(LlamaAttention):
 
         ### SumCache Add Below ###
         past_key_value = self.kv_cache(
-            key_states, value_states, self.layer_idx, 
-            past_key_value, attn_weights.detach()
+            key_states, value_states, self.layer_idx,
+            past_key_value, attn_weights.detach().clone()
         )
+        # self.position_ids_margin = kv_seq_len - self.kv_cache.cache_size
         ### SumCache Add Above ###
 
         # upcast attention to fp32
@@ -390,15 +380,8 @@ class LlamaSumCacheAttention(LlamaAttention):
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
-
         attn_output = attn_output.reshape(bsz, q_len, -1)
-
-        if self.config.pretraining_tp > 1:
-            attn_output = attn_output.split(self.hidden_size // self.config.pretraining_tp, dim=2)
-            o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.config.pretraining_tp, dim=1)
-            attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.config.pretraining_tp)])
-        else:
-            attn_output = self.o_proj(attn_output)
+        attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
@@ -410,17 +393,17 @@ class LlamaSumCacheForCausalLM(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config)
         self.model = LlamaSumCacheModel(config)
-        self.vocab_size = config.vocab_size + self.model.num_sum_tokens
+        # self.vocab_size = config.vocab_size + self.model.num_sum_tokens
 
         # 扩展lm_head以包含sum tokens
-        old_lm_head = self.lm_head
-        self.lm_head = nn.Linear(config.hidden_size, self.model.vocab_size, bias=False)
-        with torch.no_grad():
-            self.lm_head.weight[:old_lm_head.weight.size(0)] = old_lm_head.weight
+        # old_lm_head = self.lm_head
+        # self.lm_head = nn.Linear(config.hidden_size, self.model.vocab_size, bias=False)
+        # with torch.no_grad():
+        #     self.lm_head.weight[:old_lm_head.weight.size(0)] = old_lm_head.weight
             # 初始化sum token的输出权重
-            avg_weight = old_lm_head.weight.mean(dim=0)
-            for i in range(old_lm_head.weight.size(0), self.vocab_size):
-                self.lm_head.weight[i] = avg_weight
+            # avg_weight = old_lm_head.weight.mean(dim=0)
+            # for i in range(old_lm_head.weight.size(0), self.vocab_size):
+            #     self.lm_head.weight[i] = avg_weight
 
     def forward(
         self,
@@ -436,7 +419,7 @@ class LlamaSumCacheForCausalLM(LlamaForCausalLM):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         output_last_logits_only: bool = False,
-        sum_token_positions: Optional[torch.Tensor] = None,  # 新增sum_token位置
+        # sum_token_positions: Optional[torch.Tensor] = None,  # 新增sum_token位置
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -447,7 +430,8 @@ class LlamaSumCacheForCausalLM(LlamaForCausalLM):
         # 修改causal_mask生成以包含sum_token_positions
         causal_mask = self.model._update_causal_mask(
             attention_mask, inputs_embeds, cache_position,
-            past_key_values, output_attentions, sum_token_positions
+            past_key_values, output_attentions
+            # past_key_values, output_attentions, sum_token_positions
         )
         
         # 将sum_token_positions传递给decoder layers
@@ -462,7 +446,7 @@ class LlamaSumCacheForCausalLM(LlamaForCausalLM):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             cache_position=cache_position,
-            sum_token_positions=sum_token_positions,
+            # sum_token_positions=sum_token_positions,
         )
 
         hidden_states = outputs[0]

@@ -1,7 +1,7 @@
 # transformers.__version__ == '4.43.3'
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,6"
 
 from typing import List, Optional, Tuple, Union
 from transformers.cache_utils import Cache
@@ -76,7 +76,7 @@ LlamaForCausalLM.forward = my_forward
 MistralForCausalLM.forward = my_forward
 Phi3ForCausalLM.forward = my_forward
 
-def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map='auto', flash_attention_2=False):
+def load_model(model_id, num_sum_tokens=0, modified=None, torch_dtype=torch.float16, device_map='auto', flash_attention_2=False):
     if flash_attention_2:
         attn_implementation = 'flash_attention_2'
     else:
@@ -119,4 +119,6 @@ def load_model(model_id, modified=None, torch_dtype=torch.float16, device_map='a
                                             device_map=device_map
                                             ).eval() 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
+    # tokenizer.add_tokens([f"<sum_token_{i}>" for i in range(num_sum_tokens)])
+    # model.resize_token_embeddings(len(tokenizer))
     return model, tokenizer
