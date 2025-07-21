@@ -147,7 +147,7 @@ class SumKVCache_LayerWise:
 
         self.summary_q = nn.Parameter(torch.randn(self.num_sum_tokens, head_dim))
 
-    def __call__(self, key_states, value_states, layer_idx, past_key_values, attn_weights):
+    def __call__(self, key_states, value_states, layer_idx, past_key_values, attn_weights, rotary_emb):
         """
         直接修改past_key_values，避免复制缓存
         """
@@ -160,7 +160,7 @@ class SumKVCache_LayerWise:
         # 更新重要性分数：注意力权重列求和
         self._update_importance_scores(attn_weights)
 
-        # if past_key_values is None:
+        # if past_key_values is None or DynamicCache():
         #     return None
 
         # 正确计算当前总长度
@@ -172,7 +172,7 @@ class SumKVCache_LayerWise:
         while (total_len > self.recent_size and
                (total_len - self.recent_size - self.last_compressed_idx) >= self.chunk_size):
             past_key_values = self.compress_chunk(
-                key_states, value_states, layer_idx, past_key_values, total_len
+                key_states, value_states, layer_idx, past_key_values, total_len, rotary_emb
             )
 
             # 更新缓存长度（压缩后长度会变化）
@@ -195,7 +195,7 @@ class SumKVCache_LayerWise:
         
         self.importance_scores[:, -seq_len:] += new_scores
     
-    def compress_chunk(self, key_states, value_states, layer_idx, past_key_values, total_len):
+    def compress_chunk(self, key_states, value_states, layer_idx, past_key_values, total_len, rotary_emb):
         # 计算要压缩的chunk范围
         start_idx = self.last_compressed_idx
         end_idx = min(start_idx + self.chunk_size, total_len - self.recent_size)
@@ -246,6 +246,21 @@ class SumKVCache_LayerWise:
             compressed_key = key_topk
             compressed_value = value_topk
         
+
+        # 重新计算compressed chunk的RoPE
+        # compressed_len = compressed_key.shape[2]
+        # new_positions = torch.arange(
+        #     start_idx, 
+        #     start_idx + compressed_len,
+        #     device=compressed_key.device
+        # ).unsqueeze(0)  # [1, compressed_len]
+
+        # cos, sin = rotary_emb(compressed_key, new_positions)
+        # dummy_q = torch.zeros_like(compressed_key)
+        # _, compressed_key = apply_rotary_pos_emb(
+        #     dummy_q, compressed_key, cos, sin
+        # )
+
         # 更新缓存
         if past_key_values is None:
             # 创建新缓存
@@ -289,8 +304,9 @@ class SumKVCache_LayerWise:
             self.importance_scores[:, end_idx:]
         ], dim=1)
 
-        self.last_compressed_idx = start_idx + new_score_segment.size(1)
-
+        # self.last_compressed_idx = start_idx + new_score_segment.size(1)   
+        self.last_compressed_idx += compressed_key.shape[2]
+        
         return past_key_values
 
 
@@ -357,20 +373,19 @@ class LlamaSumCacheAttention(LlamaAttention):
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
             attn_weights = attn_weights + causal_mask
 
+        # upcast attention to fp32
         attn_weights = nn.functional.softmax(
             attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
 
         ### SumCache Add Below ###
         past_key_value = self.kv_cache(
             key_states, value_states, self.layer_idx,
-            past_key_value, attn_weights.detach().clone()
+            past_key_value, attn_weights.detach().clone(),
+            rotary_emb=self.rotary_emb
         )
         # self.position_ids_margin = kv_seq_len - self.kv_cache.cache_size
         ### SumCache Add Above ###
 
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
