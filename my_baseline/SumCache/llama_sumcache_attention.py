@@ -85,7 +85,6 @@ class LlamaSumCacheAttention(LlamaAttention):
             attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
 
         ### SumCache Add Below ###
-
         if past_key_value is not None and q_len > 1:
             self.kv_cache._clean_scores()
             past_key_value = self.kv_cache(
@@ -266,7 +265,6 @@ class LlamaSumCacheForCausalLM(LlamaForCausalLM):
             # past_key_values, output_attentions, sum_token_positions
         )
         
-        # 将sum_token_positions传递给decoder layers
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=causal_mask,

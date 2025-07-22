@@ -1,6 +1,6 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,6"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,7"
 
 import argparse
 import torch 
@@ -30,6 +30,8 @@ ctx_len = args.ctx_len
 topk_important = args.topk_important
 num_sum_tokens = args.num_sum_tokens
 chunk_size = args.chunk_size
+
+assert chunk_size >= topk_important
 
 if args.modified in ['h2o', 'sumcache']:
     flash_attention_2 = False
