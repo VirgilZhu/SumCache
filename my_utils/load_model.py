@@ -1,7 +1,7 @@
 # transformers.__version__ == '4.43.3'
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,7"
 
 from typing import List, Optional, Tuple, Union
 from transformers.cache_utils import Cache

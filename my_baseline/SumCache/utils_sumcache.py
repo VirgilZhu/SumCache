@@ -17,15 +17,13 @@ def sum_group(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 class SumKVCache_LayerWise:
     def __init__(
         self,
-        sum_cache_size=512,
+        sum_cache_size=4,
         recent_size=512,
         chunk_size=26,
         topk_important=4,
         num_sum_tokens=2,
         k_seq_dim=2,
         v_seq_dim=2,
-        num_heads=32,
-        head_dim=128,
     ):
         self.sum_cache_size = sum_cache_size
         self.recent_size = recent_size
@@ -40,12 +38,16 @@ class SumKVCache_LayerWise:
         self.importance_scores = None
         self.last_compressed_idx = 0
 
-        self.summary_q = nn.Parameter(torch.randn(num_heads, self.num_sum_tokens, head_dim))
+        self.summary_q = None
 
     def __call__(self, key_states, value_states, layer_idx, past_key_values, attn_weights, rotary_emb, num_key_value_groups):
         self._update_importance_scores(attn_weights, num_key_value_groups)
 
-        seq_len = key_states.shape[2]
+        _, num_heads, seq_len, head_dim = key_states.shape
+
+        if self.summary_q is None:
+            self.summary_q = nn.Parameter(torch.randn(num_heads, self.num_sum_tokens, head_dim, dtype=key_states.dtype))
+
         if seq_len < self.cache_max_size:
             self.cache_size = seq_len
             return past_key_values
@@ -96,7 +98,7 @@ class SumKVCache_LayerWise:
                 self.importance_scores[:, end_idx:]
             ], dim=1)
 
-            self.last_compressed_idx += compressed_key.shape[2]     
+            self.last_compressed_idx = start_idx
 
             return past_key_values   
 
@@ -106,7 +108,7 @@ class SumKVCache_LayerWise:
         value_chunk = past_key_values.value_cache[layer_idx][:, :, start_idx:end_idx]
         scores_chunk = self.importance_scores[:, start_idx:end_idx]
         
-        bsz, _, chunk_len, head_dim = key_chunk.shape
+        bsz, num_heads, chunk_len, head_dim = key_chunk.shape
 
         key_topk, value_topk, topk_scores, new_score_segment = None, None, None, None
 
@@ -126,22 +128,94 @@ class SumKVCache_LayerWise:
             summary_q = self.summary_q.to(device=key_chunk.device)
             summary_q = summary_q.unsqueeze(0).expand(bsz, -1, -1, -1)  # [bsz, num_heads, num_sum_tokens, head_dim]
 
-            # 计算 summary tokens 的 attention score
-            attn_scores = torch.matmul(             # [bsz, num_heads, num_sum_tokens, chunk_len]
-                summary_q,
-                key_chunk.transpose(-1, -2)
-            ) / math.sqrt(head_dim)
+            chunk_attn_mask = torch.full(
+                (self.num_sum_tokens, chunk_len + self.num_sum_tokens), 
+                float('-inf'), 
+                device=key_chunk.device,
+                dtype=summary_q.dtype
+            )
 
-            attn_weights = F.softmax(attn_scores, dim=-1)
+            chunk_attn_mask[:, :chunk_len] = 0
+
+            for i in range(self.num_sum_tokens):
+                # 允许关注之前的summary tokens
+                chunk_attn_mask[i, chunk_len:chunk_len + i] = 0
+                # 允许关注自己
+                chunk_attn_mask[i, chunk_len + i] = 0
+            
+            chunk_attn_mask = chunk_attn_mask.unsqueeze(0).unsqueeze(0)  # [bsz, num_heads, num_sum_tokens, chunk_len + num_sum_tokens]
+            
+            extended_key = torch.cat([
+                key_chunk, 
+                torch.zeros(bsz, num_heads, self.num_sum_tokens, head_dim, device=key_chunk.device, dtype=summary_q.dtype)
+            ], dim=2)
+            
+            extended_value = torch.cat([
+                value_chunk, 
+                torch.zeros(bsz, num_heads, self.num_sum_tokens, head_dim, device=key_chunk.device, dtype=summary_q.dtype)
+            ], dim=2)
+
+            # 迭代计算每个summary token
+            summary_k_list = []
+            summary_v_list = []
+            summary_scores_list = []
+
+            for i in range(self.num_sum_tokens):
+                # 当前summary token的query
+                cur_sum_q = summary_q[:, :, i:i+1, :]
+                
+                # 当前summary token的注意力分数
+                cur_sum_attn_scores = torch.matmul(
+                    cur_sum_q,
+                    extended_key.transpose(-1, -2)
+                ) / math.sqrt(head_dim)
+                
+                # 应用掩码
+                cur_sum_attn_scores = cur_sum_attn_scores + chunk_attn_mask[:, :, i:i+1, :]
+                
+                cur_sum_attn_weights = F.softmax(cur_sum_attn_scores, dim=-1)
+                
+                # 聚合得到当前summary token的KV
+                cur_sum_k = torch.matmul(cur_sum_attn_weights, extended_key)
+                cur_sum_v = torch.matmul(cur_sum_attn_weights, extended_value)
+                
+                # 更新扩展的KV序列
+                extended_key[:, :, chunk_len + i] = cur_sum_k.squeeze(2)
+                extended_value[:, :, chunk_len + i] = cur_sum_v.squeeze(2)
+                
+                # 保存当前summary token的KV
+                summary_k_list.append(cur_sum_k)
+                summary_v_list.append(cur_sum_v)
+                
+                # 计算重要分数
+                cur_sum_score = cur_sum_attn_scores.sum(dim=-1).sum(dim=0)
+                summary_scores_list.append(cur_sum_score)
+            
+            # 合并所有summary tokens
+            summary_k = torch.cat(summary_k_list, dim=2)
+            summary_v = torch.cat(summary_v_list, dim=2)
+            summary_scores = torch.cat(summary_scores_list, dim=1)
+
+
+
+
+
+            # 计算 summary tokens 的 attention score
+            # attn_scores = torch.matmul(             # [bsz, num_heads, num_sum_tokens, chunk_len]
+            #     summary_q,
+            #     key_chunk.transpose(-1, -2)
+            # ) / math.sqrt(head_dim)
+
+            # attn_weights = F.softmax(attn_scores, dim=-1)
             # L1归一化
             # attn_weights = attn_weights / (attn_weights.sum(dim=-1, keepdim=True) + 1e-8)
 
             # 使用注意力权重聚合 kv
-            summary_k = torch.matmul(attn_weights, key_chunk)
-            summary_v = torch.matmul(attn_weights, value_chunk)
+            # summary_k = torch.matmul(attn_weights, key_chunk)
+            # summary_v = torch.matmul(attn_weights, value_chunk)
 
             # summary tokens 的 important scores
-            summary_scores = attn_scores.sum(dim=-1).sum(dim=0)
+            # summary_scores = attn_scores.sum(dim=-1).sum(dim=0)
             # summary_scores = attn_weights.mean(dim=[0, 3])
 
             # if topk_scores.numel() > 0:

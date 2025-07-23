@@ -19,17 +19,14 @@ from .utils_sumcache import SumKVCache_LayerWise
 class LlamaSumCacheAttention(LlamaAttention):
     def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx)
-        head_dim = config.hidden_size // config.num_attention_heads
         self.kv_cache = SumKVCache_LayerWise(
-            sum_cache_size=4096-256,
-            recent_size=256,
+            sum_cache_size=4096-32,
+            recent_size=32,
             chunk_size=26,
             topk_important=4,
             num_sum_tokens=2,
             k_seq_dim=2,
             v_seq_dim=2,
-            num_heads=config.num_attention_heads,
-            head_dim=head_dim,
         )
     
     def forward(
