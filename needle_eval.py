@@ -81,5 +81,5 @@ with torch.no_grad():
         response = my_greedy_generate_selection(
             input_ids, attn_mask, model, tokenizer, max_gen_len=50, select_layer_idx=select_layer_idx, print_context=False)
     else:
-        response = my_greedy_generate_standard(input_ids, attn_mask, model, tokenizer, max_gen_len=50)
+        response = my_greedy_generate_standard(input_ids, attn_mask, model, tokenizer, max_gen_len=80)
 print("Response:", response.split("\n")[0])
