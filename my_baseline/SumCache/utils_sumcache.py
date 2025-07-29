@@ -17,17 +17,18 @@ def sum_group(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 class SumKVCache_LayerWise:
     def __init__(
         self,
-        sum_cache_size=4,
-        recent_size=512,
-        chunk_size=26,
-        topk_important=4,
+        compressed_cache_limit=4096-32,
+        recent_size=32,
+        chunk_size=64,
+        topk_important=1,
         num_sum_tokens=2,
         k_seq_dim=2,
         v_seq_dim=2,
+        sum_compress_ratio=0.5
     ):
-        self.sum_cache_size = sum_cache_size
+        self.compressed_cache_limit = compressed_cache_limit
         self.recent_size = recent_size
-        self.cache_max_size = sum_cache_size + recent_size
+        self.cache_max_size = compressed_cache_limit + recent_size
         self.chunk_size = chunk_size
         self.cache_size = 0
         self.topk_important = topk_important
@@ -57,11 +58,19 @@ class SumKVCache_LayerWise:
         while (seq_len > self.recent_size and
                (seq_len - self.recent_size - self.last_compressed_idx) >= self.chunk_size):
             past_key_values = self.compress_chunk(
-                key_states, value_states, layer_idx, past_key_values, seq_len, rotary_emb
+                layer_idx, past_key_values, seq_len, rotary_emb
             )
 
             seq_len = past_key_values.key_cache[layer_idx].shape[2]
             self.cache_size = seq_len
+        
+        # 如果当前sumcache大小超出限制，压缩sumcache
+        # if self.last_compressed_idx > self.compressed_cache_limit:
+        #     past_key_values = self.compress_sumcache(
+        #         layer_idx, past_key_values, seq_len, rotary_emb
+        #     )
+        #     seq_len = past_key_values.key_cache[layer_idx].shape[2]
+        #     self.cache_size = seq_len
 
         return past_key_values
     
@@ -76,7 +85,7 @@ class SumKVCache_LayerWise:
             attn_score_cache[:, :-num_new_tokens] += self.importance_scores
             self.importance_scores = attn_score_cache
     
-    def compress_chunk(self, key_states, value_states, layer_idx, past_key_values, total_len, rotary_emb):
+    def compress_chunk(self, layer_idx, past_key_values, total_len, rotary_emb):
         start_idx = self.last_compressed_idx
         end_idx = min(start_idx + self.chunk_size, total_len - self.recent_size)
 
@@ -205,8 +214,6 @@ class SumKVCache_LayerWise:
             ) / math.sqrt(head_dim)
 
             attn_weights = F.softmax(attn_scores, dim=-1)
-            # L1归一化
-            # attn_weights = attn_weights / (attn_weights.sum(dim=-1, keepdim=True) + 1e-8)
 
             # 使用注意力权重聚合 kv
             summary_k = torch.matmul(attn_weights, key_chunk)
@@ -247,30 +254,20 @@ class SumKVCache_LayerWise:
         #     dummy_q, compressed_key, cos, sin
         # )
 
-        if past_key_values is None:
-            past_key_values = DynamicCache()
-            past_key_values.key_cache = [compressed_key]
-            past_key_values.value_cache = [compressed_value]
-            
-            if chunk_len < key_states.shape[2]:
-                remaining_key = key_states[:, :, chunk_size:]
-                remaining_value = value_states[:, :, chunk_size:]
-                past_key_values.update(remaining_key, remaining_value, layer_idx)
-        else:
-            new_key_cache = torch.cat([
-                past_key_values.key_cache[layer_idx][:, :, :start_idx],
-                compressed_key,
-                past_key_values.key_cache[layer_idx][:, :, end_idx:]
-            ], dim=2)
-            
-            new_value_cache = torch.cat([
-                past_key_values.value_cache[layer_idx][:, :, :start_idx],
-                compressed_value,
-                past_key_values.value_cache[layer_idx][:, :, end_idx:]
-            ], dim=2)
-            
-            past_key_values.key_cache[layer_idx] = new_key_cache
-            past_key_values.value_cache[layer_idx] = new_value_cache
+        new_key_cache = torch.cat([
+            past_key_values.key_cache[layer_idx][:, :, :start_idx],
+            compressed_key,
+            past_key_values.key_cache[layer_idx][:, :, end_idx:]
+        ], dim=2)
+        
+        new_value_cache = torch.cat([
+            past_key_values.value_cache[layer_idx][:, :, :start_idx],
+            compressed_value,
+            past_key_values.value_cache[layer_idx][:, :, end_idx:]
+        ], dim=2)
+        
+        past_key_values.key_cache[layer_idx] = new_key_cache
+        past_key_values.value_cache[layer_idx] = new_value_cache
 
         self.importance_scores = torch.cat([
             self.importance_scores[:, :start_idx],

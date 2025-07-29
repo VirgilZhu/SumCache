@@ -7,7 +7,8 @@ import pandas as pd
 import json
 import glob
 
-FOLDER_PATH = "results/Meta-Llama-3.1-8B-Instruct-gemfilter-layer-13-1024/"
+# FOLDER_PATH = "results/Meta-Llama-3.1-8B-Instruct-gemfilter-layer-13-1024/"
+FOLDER_PATH = "results/Meta-Llama-3.1-8B-Instruct-sumcache-1024/"
 MODEL_NAME = "LLaMA 3.1 8B Instruct Ours-1024 (layer-13)"
 
 def main():

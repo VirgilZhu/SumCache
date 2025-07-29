@@ -1,6 +1,6 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,7"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1,3"
 
 import argparse
 import torch 
@@ -20,7 +20,8 @@ parser.add_argument('--topk', type=int, default=1024, help='KV cache size')
 parser.add_argument('--ctx_len', type=int, default=32000, help='haystack context token length')
 parser.add_argument('--num_sum_tokens', type=int, default=2, help='summary tokens size in a compressed chunk')
 parser.add_argument('--topk_important', type=int, default=4, help='important tokens size in a compressed chunk')
-parser.add_argument('--chunk_size', type=int, default=26, help='size of a sequence chunk before compressed')
+parser.add_argument('--chunk_size', type=int, default=64, help='size of a sequence chunk before compressed')
+parser.add_argument('--sum_compress_ratio', type=float, default=0.5, help='Proportion of SumCache in CompressCache')
 args = parser.parse_args()
 
 model_id = args.model
@@ -30,8 +31,10 @@ ctx_len = args.ctx_len
 topk_important = args.topk_important
 num_sum_tokens = args.num_sum_tokens
 chunk_size = args.chunk_size
+sum_compress_ratio = args.sum_compress_ratio
 
 assert chunk_size >= topk_important
+assert sum_compress_ratio >= 0
 
 if args.modified in ['h2o', 'sumcache']:
     flash_attention_2 = False
@@ -52,7 +55,7 @@ else:
 torch_dtype=torch.float16
 model, tokenizer = load_model(model_id, num_sum_tokens, modified=modified, torch_dtype=torch_dtype, flash_attention_2=flash_attention_2)
 if modified:
-    set_topk(model, topk, num_sum_tokens, topk_important, chunk_size, mode=modified)
+    set_topk(model, topk, num_sum_tokens, topk_important, chunk_size, sum_compress_ratio, mode=modified)
 
 # Construct the Needle-in-a-HayStack Prompt
 needle = "\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n"

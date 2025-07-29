@@ -3,6 +3,9 @@ Adapted from
 https://github.com/gkamradt/LLMTest_NeedleInAHaystack
 """
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,4,6,7"
+
 import tiktoken
 import os 
 import glob
@@ -56,7 +59,11 @@ class LLMNeedleHaystackTester:
                  print_ongoing_status = True,
                  modified=None,
                  topk=None,
-                 select_layer_idx=None
+                 select_layer_idx=None,
+                 num_sum_tokens=None,
+                 topk_important=None,
+                 chunk_size=None,
+                 sum_compress_ratio=None
                  ):
         """        
         :param needle: The needle to be found in the haystack. Default is None.
@@ -85,6 +92,10 @@ class LLMNeedleHaystackTester:
         :param modified: Whether or not modify the model. Choose from [None, 'select', 'snapkv', 'h2o'].
         :param topk: Top k selection based on KV cache.
         :param select_layer_idx: For select mode.
+        :param num_sum_tokens: Summary tokens size in a compressed chunk.
+        :param topk_important: Important tokens size in a compressed chunk.
+        :param chunk_size: Size of a sequence chunk before compressed.
+        :param sum_compress_ratio: Proportion of SumCache in CompressCache.
         """
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
@@ -104,6 +115,10 @@ class LLMNeedleHaystackTester:
         self.modified = modified
         self.topk = topk
         self.select_layer_idx = select_layer_idx
+        self.num_sum_tokens = num_sum_tokens
+        self.topk_important = topk_important
+        self.chunk_size = chunk_size
+        self.sum_compress_ratio = sum_compress_ratio
 
         if("/" in model_name):
             self.model_version = model_name.split("/")[-1]
@@ -136,9 +151,11 @@ class LLMNeedleHaystackTester:
 
         if(self.model_provider not in ["OpenAI", "Anthropic"]):
             print("loading from %s" % model_name)
+            # self.model_to_test, self.enc = load_model(
+            #     model_name, modified=self.modified, torch_dtype=torch.float16, flash_attention_2=True)
             self.model_to_test, self.enc = load_model(
-                model_name, modified=self.modified, torch_dtype=torch.float16, flash_attention_2=True)
-        else: 
+                model_name, modified = self.modified, torch_dtype = torch.float16)
+        else:
             self.model_to_test = OpenAI(api_key=openai_api_key)
             if(self.model_provider == "OpenAI"):
                 self.enc = tiktoken.encoding_for_model(self.model_name)
@@ -228,7 +245,7 @@ class LLMNeedleHaystackTester:
             attn_mask = prompt["attention_mask"].to(self.model_to_test.device)
             with torch.no_grad():
                 if self.modified:
-                    set_topk(self.model_to_test, self.topk, mode=self.modified)
+                    set_topk(self.model_to_test, self.topk, self.num_sum_tokens, self.topk_important, self.chunk_size, self.sum_compress_ratio, mode=self.modified)
                 if self.modified == 'gemfilter':
                     response = my_greedy_generate_selection(
                         input_ids, attn_mask, self.model_to_test, self.enc, max_gen_len=50, select_layer_idx=self.select_layer_idx)
@@ -454,6 +471,11 @@ if __name__ == "__main__":
     parser.add_argument('--topk', type=int, default=None, help='KV cache size')
     parser.add_argument('--select_layer_idx', type=int, default=None, help='use which layer as selection')
     parser.add_argument('--api_key', type=str, default="", help='OpenAI API Key')
+    parser.add_argument('--num_sum_tokens', type=int, default=2, help='summary tokens size in a compressed chunk')
+    parser.add_argument('--topk_important', type=int, default=4, help='important tokens size in a compressed chunk')
+    parser.add_argument('--chunk_size', type=int, default=64, help='size of a sequence chunk before compressed')
+    parser.add_argument('--sum_compress_ratio', type=float, default=0.5, help='Proportion of SumCache in CompressCache')
+
     # parser = add_args(parser)
     args = parser.parse_args()
 
@@ -472,7 +494,11 @@ if __name__ == "__main__":
                                  openai_api_key=args.api_key,
                                  modified=args.modified,
                                  topk=args.topk,
-                                 select_layer_idx=args.select_layer_idx
+                                 select_layer_idx=args.select_layer_idx,
+                                 num_sum_tokens=args.num_sum_tokens,
+                                 topk_important=args.topk_important,
+                                 chunk_size=args.chunk_size,
+                                 sum_compress_ratio=args.sum_compress_ratio
                                  )
 
     ht.start_test(args)
