@@ -3,6 +3,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import torch
+import torch.nn as nn
 
 def get_layer_context(model, tokenizer, input_ids, layer_idx, print_context=False):
     decoder_layer = model.model.layers[layer_idx]
@@ -23,8 +24,11 @@ def recover_layer(model, layers):
     model.model.layers = layers
     return model
 
-def set_topk(model, topk, num_sum_tokens=2, topk_important=1, chunk_size=64, sum_compress_ratio=0.5, mode='sumcache'):
+def set_topk(model, topk, num_sum_tokens=2, topk_important=1, chunk_size=64, sum_compress_ratio=0.5, vocab_size=0, mode='sumcache'):
     decoder_layers = model.model.layers
+    summary_token_ids = [vocab_size - i - 1 for i in range(num_sum_tokens-1, -1, -1)]
+    summary_token_embeds = model.model.embed_tokens(torch.tensor(summary_token_ids))
+
     for i in range(len(decoder_layers)):
         if mode == 'gemfilter':
             decoder_layers[i].self_attn.topk = topk
@@ -36,12 +40,26 @@ def set_topk(model, topk, num_sum_tokens=2, topk_important=1, chunk_size=64, sum
             decoder_layers[i].self_attn.kv_cache.cache_max_size = topk
         elif mode == 'sumcache':
             recent_size = decoder_layers[i].self_attn.kv_cache.recent_size
-            decoder_layers[i].self_attn.kv_cache.compressed_cache_limit = topk - recent_size
+            decoder_layers[i].self_attn.kv_cache.compress_cache_limit = topk - recent_size
             decoder_layers[i].self_attn.kv_cache.cache_max_size = topk
             decoder_layers[i].self_attn.kv_cache.num_sum_tokens = num_sum_tokens
             decoder_layers[i].self_attn.kv_cache.topk_important = topk_important
             decoder_layers[i].self_attn.kv_cache.chunk_size = chunk_size
             decoder_layers[i].self_attn.kv_cache.sum_compress_ratio = sum_compress_ratio
+            decoder_layers[i].self_attn.kv_cache.important_cache_limit = int((topk - recent_size) * (1 - sum_compress_ratio))
+            decoder_layers[i].self_attn.kv_cache.summary_cache_limit = int((topk - recent_size) * sum_compress_ratio)
+            
+            with torch.no_grad():
+                projected = decoder_layers[i].self_attn.q_proj(summary_token_embeds)
+                num_heads = decoder_layers[i].self_attn.num_heads
+                head_dim = decoder_layers[i].self_attn.head_dim
+                projected = projected.view(
+                    num_sum_tokens, 
+                    num_heads, 
+                    head_dim
+                ).transpose(0, 1).unsqueeze(0)
+
+                decoder_layers[i].self_attn.kv_cache.summary_q = nn.Parameter(projected, requires_grad=False)
         else:
             raise NotImplementedError
     return

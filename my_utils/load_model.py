@@ -116,6 +116,19 @@ def load_model(model_id, num_sum_tokens=0, modified=None, torch_dtype=torch.floa
                                             device_map=device_map
                                             ).eval() 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    # tokenizer.add_tokens([f"<sum_token_{i}>" for i in range(num_sum_tokens)])
-    # model.resize_token_embeddings(len(tokenizer))
+
+    if modified == 'sumcache':
+        tokenizer.add_special_tokens({'additional_special_tokens': [f"<sum_token_{i}>" for i in range(num_sum_tokens)]})
+        model.resize_token_embeddings(len(tokenizer))
+
+        descriptions = [f"summary token {i+1} of sequence" for i in range(num_sum_tokens)]
+
+        with torch.no_grad():
+            embedding_layer = model.get_input_embeddings().weight
+            for i, token in enumerate(reversed(descriptions), start=1):
+                tokenized = tokenizer.tokenize(token)
+                tokenized_ids = tokenizer.convert_tokens_to_ids(tokenized)
+                new_embedding = embedding_layer[tokenized_ids].mean(dim=0)
+                embedding_layer[-i] = new_embedding.clone().detach()
+
     return model, tokenizer

@@ -1,6 +1,6 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1,3"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 import argparse
 import torch 
@@ -55,7 +55,7 @@ else:
 torch_dtype=torch.float16
 model, tokenizer = load_model(model_id, num_sum_tokens, modified=modified, torch_dtype=torch_dtype, flash_attention_2=flash_attention_2)
 if modified:
-    set_topk(model, topk, num_sum_tokens, topk_important, chunk_size, sum_compress_ratio, mode=modified)
+    set_topk(model, topk, num_sum_tokens, topk_important, chunk_size, sum_compress_ratio, len(tokenizer), mode=modified)
 
 # Construct the Needle-in-a-HayStack Prompt
 needle = "\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n"
