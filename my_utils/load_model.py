@@ -86,7 +86,7 @@ def load_model(model_id, num_sum_tokens=0, modified=None, torch_dtype=torch.floa
         MISTRAL_ATTENTION_CLASSES[attn_implementation] = MistralSelectAttention
         PHI3_ATTENTION_CLASSES[attn_implementation] = Phi3SelectAttention
     elif modified == 'snapkv':
-        assert flash_attention_2 is True
+        # assert flash_attention_2 is True
         from my_baseline.SnapKV.monkeypatch import replace_llama, replace_mistral, replace_phi3
         replace_llama()
         replace_mistral()

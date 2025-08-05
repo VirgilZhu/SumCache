@@ -4,7 +4,7 @@ https://github.com/gkamradt/LLMTest_NeedleInAHaystack
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,3,4,5,6,7"
 
 import tiktoken
 import os 
@@ -154,7 +154,7 @@ class LLMNeedleHaystackTester:
             # self.model_to_test, self.enc = load_model(
             #     model_name, modified=self.modified, torch_dtype=torch.float16, flash_attention_2=True)
             self.model_to_test, self.enc = load_model(
-                model_name, modified = self.modified, torch_dtype = torch.float16)
+                model_name, self.num_sum_tokens, modified = self.modified, torch_dtype = torch.float16)
         else:
             self.model_to_test = OpenAI(api_key=openai_api_key)
             if(self.model_provider == "OpenAI"):
@@ -245,7 +245,7 @@ class LLMNeedleHaystackTester:
             attn_mask = prompt["attention_mask"].to(self.model_to_test.device)
             with torch.no_grad():
                 if self.modified:
-                    set_topk(self.model_to_test, self.topk, self.num_sum_tokens, self.topk_important, self.chunk_size, self.sum_compress_ratio, mode=self.modified)
+                    set_topk(self.model_to_test, self.topk, self.num_sum_tokens, self.topk_important, self.chunk_size, self.sum_compress_ratio, len(self.enc), mode=self.modified)
                 if self.modified == 'gemfilter':
                     response = my_greedy_generate_selection(
                         input_ids, attn_mask, self.model_to_test, self.enc, max_gen_len=50, select_layer_idx=self.select_layer_idx)
