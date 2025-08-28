@@ -110,6 +110,10 @@ def load_model(model_id, num_sum_tokens=0, modified=None, torch_dtype=torch.floa
     else:
         assert modified is None
 
+    if model_id == "meta-llama/Meta-Llama-3.1-8B-Instruct":
+        # model_id = "./model/meta-llama--Meta-Llama-3.1-8B-Instruct"
+        model_id = "../../model/meta-llama--Meta-Llama-3.1-8B-Instruct"
+
     model = AutoModelForCausalLM.from_pretrained(model_id, 
                                             attn_implementation=attn_implementation, 
                                             torch_dtype=torch_dtype, 
